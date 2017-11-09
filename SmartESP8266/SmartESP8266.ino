@@ -1,24 +1,26 @@
-#include <FS.h>                   // This needs to be first, or it all crashes and burns
 #include "PubSubClient.h"
 #include <IRremoteESP8266.h>
+#include <IRsend.h>
+#include <IRrecv.h>
+#include <IRutils.h>
 #include <DNSServer.h>
 #include <ESP8266WiFi.h>
-#include <WiFiManager.h>          // https://github.com/tzapu/WiFiManager WiFi Configuration Magic
-#include <ESP8266mDNS.h>          // useful to access to ESP by hostname.local
-
+#include <WiFiManager.h>
+#include <ESP8266mDNS.h>
 #include <ArduinoJson.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
+#include <Ticker.h>
+#include <FS.h>         
 
-#include <Ticker.h>               // For LED status
-
-const char *wifi_config_name = "IRBlaster Configuration";
+const char *wifi_config_name = "Base Configuration";
 int port = 80;
 char passcode[40] = "";
 char host_name[40] = "";
 char last_codes[5][20];
 char last_code_idx = 0;
 
+//Ports
 #define D0 16
 #define D1 5
 #define D2 4
@@ -29,7 +31,6 @@ char last_code_idx = 0;
 #define D7 13
 #define D8 15
 
-//Defines
 #define PIN_LED1 D0
 #define PIN_LED0 D4
 
@@ -47,6 +48,7 @@ char last_code_idx = 0;
 #define PIN_IN3 D8
 #define PIN_RESET 10
 
+//MQTT
 #define TOPICO_SUBSCRIBE_D4  "MQTTD4Envia20170506"
 #define TOPICO_PUBLISH_D4  "MQTTD4Recebe20170506"
 
@@ -55,34 +57,32 @@ char last_code_idx = 0;
 #define TOPICO_PUBLISH_IN2  "MQTTD2Recebe20170506"
 #define TOPICO_PUBLISH_IN3  "MQTTD3Recebe20170506"
 
-
 #define ID_MQTT "HomeAut"
 
-const int configpin = PIN_RESET;         // enable configuration (connect to ground)
+const int configpin = PIN_RESET;
 
-const char* BROKER_MQTT = "192.168.0.159";
+const char* BROKER_MQTT = "192.168.1.101";
 int BROKER_PORT = 1883;
-//void initMQTT();
-//void mqtt_callback(char* topic, byte* payload, unsigned int length);
-//void verificaConexoesWiFIEMQTT(void);
+
+//WIFI
 WiFiClient espClient;
 PubSubClient MQTT(espClient);
-char EstadoSaida = '0';
-
+char StateOutput = '0';
 
 ESP8266WebServer server(port);
 HTTPClient http;
 Ticker ticker;
 
-bool shouldSaveConfig = false;    // Flag for saving data
+bool shouldSaveConfig = false;              // Flag for saving data
 
-IRrecv irrecv(PIN_IRIN0);                 // Receiving pin
-IRsend irsend1(PIN_IROUT0);                // Transmitting preset 1
-IRsend irsend2(PIN_IROUT1);                // Transmitting preset 2
+//IR
+IRrecv irrecv(PIN_IRIN0);                   // Receiving pin
+IRsend irsend1(PIN_IROUT0);                 // Transmitting preset 1
+IRsend irsend2(PIN_IROUT1);                 // Transmitting preset 2
 
-//+=============================================================================
+//=============================================================================
 // MQTT
-//
+//=============================================================================
 void initMQTT() 
 {
   MQTT.setServer(BROKER_MQTT, BROKER_PORT);
@@ -103,13 +103,13 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length)
  if(msg.equals("L"))
  {
   digitalWrite(PIN_LED0,LOW);
-  EstadoSaida = '1';
+  StateOutput = '1';
  }
 
  if (msg.equals("D"))
  {
   digitalWrite(PIN_LED0, HIGH);
-  EstadoSaida = '0';  
+  StateOutput = '0';  
  }
  
 }
@@ -135,22 +135,22 @@ void reconnectMQTT()
 }
 
 
-void VerificaConexoesWiFIEMQTT(void)
+void CheckMQTT(void)
 {
   if(!MQTT.connected())
     reconnectMQTT();
 }
 
-void EnviaEstadoOutputMQTT(void)
+void OutputMQTT(void)
 {
 
   Serial.print("OUT D4=");
-  Serial.print(EstadoSaida);
+  Serial.print(StateOutput);
   Serial.println();
 
-  if (EstadoSaida == '0')
+  if (StateOutput == '0')
     MQTT.publish(TOPICO_PUBLISH_D4, "D");
-  if (EstadoSaida == '1')
+  if (StateOutput == '1')
     MQTT.publish(TOPICO_PUBLISH_D4, "L");
 
   int res = 0;
@@ -169,13 +169,12 @@ void EnviaEstadoOutputMQTT(void)
   Serial.print(res);
   Serial.println();
 
-  SendRemotoStatus(BROKER_MQTT, "sensor/?D1=" + String(res, DEC));
+  SendGet(BROKER_MQTT, "sensor/?D1=" + String(res, DEC));
 
   if (res == 0)
     MQTT.publish(TOPICO_PUBLISH_IN1, "D");
   if (res == 1)
-    MQTT.publish(TOPICO_PUBLISH_IN1, "L");  
- 
+    MQTT.publish(TOPICO_PUBLISH_IN1, "L");   
 
   res = digitalRead(PIN_IN2);
   Serial.print("IN D2=");
@@ -200,6 +199,9 @@ void EnviaEstadoOutputMQTT(void)
   delay(1000);
 }
 
+//=============================================================================
+// Configuration Outputs
+//=============================================================================
 void initOutput(void)
 {
   pinMode(PIN_LED0, OUTPUT);
@@ -209,44 +211,36 @@ void initOutput(void)
   pinMode(PIN_IN1, INPUT);
   pinMode(PIN_IN2, INPUT);
   pinMode(PIN_IN3, INPUT);
-  
 }
 
 
-//+=============================================================================
-// Callback notifying us of the need to save config
-//
+//=============================================================================
+// Callback Save config
+//=============================================================================
 void saveConfigCallback () {
   Serial.println("Should save config");
   shouldSaveConfig = true;
 }
 
 
-//+=============================================================================
+//=============================================================================
 // Toggle state
-//
+//=============================================================================
 void tick()
 {
   int state = digitalRead(BUILTIN_LED);  // get the current state of GPIO1 pin
-  //digitalWrite(BUILTIN_LED, !state);     // set pin to the opposite state
 }
 
-
-//+=============================================================================
-// Turn off the Led after timeout
-//
 void disableLed()
 {
   Serial.println("Turning off the LED to save power.");
-  //digitalWrite(BUILTIN_LED, HIGH);     // Shut down the LED
-  ticker.detach();                     // Stopping the ticker
+  ticker.detach();              // Stopping the ticker
 }
 
-
-//+=============================================================================
-// Gets called when WiFiManager enters configuration mode
-//
-void configModeCallback (WiFiManager *myWiFiManager) {
+//==============================================================================
+// WiFiManager configuration
+//=============================================================================
+void ConfigModeCallback (WiFiManager *myWiFiManager) {
   Serial.println("Entered config mode");
   Serial.println(WiFi.softAPIP());
   //if you used auto generated SSID, print it
@@ -255,13 +249,8 @@ void configModeCallback (WiFiManager *myWiFiManager) {
   ticker.attach(0.2, tick);
 }
 
-
-//+=============================================================================
-// First setup of the Wifi.
-// If return true, the Wifi is well connected.
-// Should not return false if Wifi cannot be connected, it will loop
-//
 bool setupWifi(bool resetConf) {
+  
   // set led pin as output
   pinMode(BUILTIN_LED, OUTPUT);
   // start ticker with 0.5 because we start in AP mode and try to connect
@@ -275,7 +264,7 @@ bool setupWifi(bool resetConf) {
     wifiManager.resetSettings();
 
   // set callback that gets called when connecting to previous WiFi fails, and enters Access Point mode
-  wifiManager.setAPCallback(configModeCallback);
+  wifiManager.setAPCallback(ConfigModeCallback);
   // set config save notify callback
   wifiManager.setSaveConfigCallback(saveConfigCallback);
 
@@ -372,9 +361,9 @@ bool setupWifi(bool resetConf) {
 }
 
 
-//+=============================================================================
-// Setup web server and IR receiver/blaster
-//
+//==============================================================================
+// Setup
+//=============================================================================
 void setup() {
 
   // Initialize serial
@@ -442,7 +431,7 @@ void setup() {
           rawblast(raw, khz, rdelay, pulse, pdelay, repeat, pickIRsend(out));
         } else if (type == "roku") {
           String data = root[x]["data"];
-          rokuCommand(ip, data);
+          SendPost(ip, data);
         } else {
           String data = root[x]["data"];
           long address = root[x]["address"];
@@ -479,7 +468,7 @@ void setup() {
       }
 
       if (type == "roku") {
-        rokuCommand(ip, data);
+        SendPost(ip, data);
       } else {
         irblast(type, data, len, rdelay, pulse, pdelay, repeat, address, pickIRsend(out));
       }
@@ -505,10 +494,10 @@ void setup() {
 }
 
 
-//+=============================================================================
-// Send command to local roku
-//
-int rokuCommand(String ip, String data) {
+//==============================================================================
+// Send post/get
+//==============================================================================
+int SendPost(String ip, String data) {
   String url = "http://" + ip + ":8060/" + data;
   http.begin(url);
   Serial.println(url);
@@ -517,7 +506,7 @@ int rokuCommand(String ip, String data) {
   http.end();
 }
 
-int SendRemotoStatus(String ip, String data) {
+int SendGet(String ip, String data) {
   String url = "http://" + ip + ":8060/" + data;
   http.begin(url);
   Serial.println(url);
@@ -525,9 +514,30 @@ int SendRemotoStatus(String ip, String data) {
   http.end();
 }
 
-//+=============================================================================
-// Split string by character
-//
+//==============================================================================
+// IR
+//==============================================================================
+void  ircode (decode_results *results)
+{
+  // Panasonic has an Address
+  if (results->decode_type == PANASONIC) {
+    //Serial.print(results->panasonicAddress, HEX);
+    Serial.print(":");
+  }
+
+  // Print Code
+  //Serial.print(results->value, HEX);
+  serialPrintUint64(results->value, HEX);
+}
+
+IRsend pickIRsend (int out) {
+  switch (out) {
+    case 1: return irsend1;
+    case 2: return irsend2;
+    default: return irsend1;
+  }
+}
+
 String getValue(String data, char separator, int index)
 {
   int found = 0;
@@ -545,67 +555,40 @@ String getValue(String data, char separator, int index)
   return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
 }
 
-
-//+=============================================================================
-// Display IR code
-//
-void  ircode (decode_results *results)
-{
-  // Panasonic has an Address
-  if (results->decode_type == PANASONIC) {
-    Serial.print(results->panasonicAddress, HEX);
-    Serial.print(":");
-  }
-
-  // Print Code
-  Serial.print(results->value, HEX);
-}
-
-
-//+
-// Return which IRsend object to act on
-//
-IRsend pickIRsend (int out) {
-  switch (out) {
-    case 1: return irsend1;
-    case 2: return irsend2;
-    default: return irsend1;
-  }
-}
-
-
-//+=============================================================================
-// Display encoding type
-//
 void  encoding (decode_results *results)
 {
   switch (results->decode_type) {
     default:
-    case UNKNOWN:      Serial.print("UNKNOWN");       break ;
-    case NEC:          Serial.print("NEC");           break ;
-    case SONY:         Serial.print("SONY");          break ;
-    case RC5:          Serial.print("RC5");           break ;
-    case RC6:          Serial.print("RC6");           break ;
-    case DISH:         Serial.print("DISH");          break ;
-    case SHARP:        Serial.print("SHARP");         break ;
-    case JVC:          Serial.print("JVC");           break ;
-    case SANYO:        Serial.print("SANYO");         break ;
-    case MITSUBISHI:   Serial.print("MITSUBISHI");    break ;
-    case SAMSUNG:      Serial.print("SAMSUNG");       break ;
-    case LG:           Serial.print("LG");            break ;
-    case WHYNTER:      Serial.print("WHYNTER");       break ;
-    case PANASONIC:    Serial.print("PANASONIC");     break ;
+    case UNKNOWN:      Serial.print("UNKNOWN");       break;
+    case NEC:          Serial.print("NEC");           break;
+    case NEC_LIKE:     Serial.print("NEC (non-strict)");  break;
+    case SONY:         Serial.print("SONY");          break;
+    case RC5:          Serial.print("RC5");           break;
+    case RC5X:         Serial.print("RC5X");          break;
+    case RC6:          Serial.print("RC6");           break;
+    case RCMM:         Serial.print("RCMM");          break;
+    case DISH:         Serial.print("DISH");          break;
+    case SHARP:        Serial.print("SHARP");         break;
+    case JVC:          Serial.print("JVC");           break;
+    case SANYO:        Serial.print("SANYO");         break;
+    case SANYO_LC7461: Serial.print("SANYO_LC7461");  break;
+    case MITSUBISHI:   Serial.print("MITSUBISHI");    break;
+    case SAMSUNG:      Serial.print("SAMSUNG");       break;
+    case LG:           Serial.print("LG");            break;
+    case WHYNTER:      Serial.print("WHYNTER");       break;
+    case AIWA_RC_T501: Serial.print("AIWA_RC_T501");  break;
+    case PANASONIC:    Serial.print("PANASONIC");     break;
+    case DENON:        Serial.print("DENON");         break;
+    case COOLIX:       Serial.print("COOLIX");        break;
+    case NIKAI:        Serial.print("NIKAI");         break;
   }
 }
 
-
-//+=============================================================================
-// Single line compact code
-//
 void fullCode (decode_results *results)
 {
   Serial.print("One line: ");
-  Serial.print(results->value, HEX);
+  //Serial.print(results->value, HEX);
+  serialPrintUint64(results->value, HEX);
   Serial.print(":");
   encoding(results);
   Serial.print(":");
@@ -613,10 +596,6 @@ void fullCode (decode_results *results)
   Serial.println("");
 }
 
-
-//+=============================================================================
-// Dump out the decode_results structure.
-//
 void dumpInfo (decode_results *results)
 {
   // Show Encoding standard
@@ -632,10 +611,6 @@ void dumpInfo (decode_results *results)
   Serial.println(" bits)");
 }
 
-
-//+=============================================================================
-// Dump out the decode_results structure.
-//
 void  dumpRaw (decode_results *results)
 {
   // Print Raw data
@@ -644,7 +619,7 @@ void  dumpRaw (decode_results *results)
   Serial.println("]: ");
 
   for (int i = 1;  i < results->rawlen;  i++) {
-    unsigned long  x = results->rawbuf[i] * USECPERTICK;
+    unsigned long  x = results->rawbuf[i] * RAWTICK;
     if (!(i & 1)) {  // even
       Serial.print("-");
       if (x < 1000)  Serial.print(" ") ;
@@ -663,10 +638,6 @@ void  dumpRaw (decode_results *results)
   Serial.println("");                    // Newline
 }
 
-
-//+=============================================================================
-// Dump out the decode_results structure.
-//
 void  dumpCode (decode_results *results)
 {
   // Start declaration
@@ -678,7 +649,7 @@ void  dumpCode (decode_results *results)
 
   // Dump data
   for (int i = 1;  i < results->rawlen;  i++) {
-    Serial.print(results->rawbuf[i] * USECPERTICK, DEC);
+    Serial.print(results->rawbuf[i] * RAWTICK, DEC);
     if ( i < results->rawlen - 1 ) Serial.print(","); // ',' not needed on last one
     if (!(i & 1))  Serial.print(" ");
   }
@@ -701,21 +672,18 @@ void  dumpCode (decode_results *results)
     // Some protocols have an address
     if (results->decode_type == PANASONIC) {
       Serial.print("unsigned int  addr = 0x");
-      Serial.print(results->panasonicAddress, HEX);
+      //Serial.print(results->panasonicAddress, HEX);
       Serial.println(";");
     }
 
     // All protocols have data
     Serial.print("unsigned int  data = ");
-    Serial.print(results->value, HEX);
+    //Serial.print(results->value, HEX);
+    serialPrintUint64(results->value, HEX);
     Serial.println(";");
   }
 }
 
-
-//+=============================================================================
-// Convert string to hex, borrowed from ESPBasic
-//
 unsigned long HexToLongInt(String h)
 {
   // this function replace the strtol as this function is not able to handle hex numbers greather than 7fffffff
@@ -740,10 +708,6 @@ unsigned long HexToLongInt(String h)
   return tmp;
 }
 
-
-//+=============================================================================
-// Send IR codes to variety of sources
-//
 void irblast(String type, String dataStr, int len, int rdelay, int pulse, int pdelay, int repeat, long address, IRsend irsend) {
   Serial.println("Blasting off");
   type.toLowerCase();
@@ -780,15 +744,14 @@ void irblast(String type, String dataStr, int len, int rdelay, int pulse, int pd
         irsend.sendRC5(data, len);
       } else if (type == "rc6") {
         irsend.sendRC6(data, len);
-      } else if (type == "roomba") {
-        roomba_send(atoi(dataStr.c_str()), pulse, pdelay, irsend);
+      } else if (type == "lg") {
+        irsend.sendLG(data, len);
       }
       delay(pdelay);
     }
     delay(rdelay);
   }
 }
-
 
 void rawblast(JsonArray &raw, int khz, int rdelay, int pulse, int pdelay, int repeat, IRsend irsend) {
   Serial.println("Raw transmit");
@@ -812,37 +775,6 @@ void rawblast(JsonArray &raw, int khz, int rdelay, int pulse, int pdelay, int re
   }
 }
 
-
-void roomba_send(int code, int pulse, int pdelay, IRsend irsend)
-{
-  Serial.print("Sending Roomba code ");
-  Serial.println(code);
-  int length = 8;
-  unsigned int raw[length * 2];
-  unsigned int one_pulse = 3000;
-  unsigned int one_break = 1000;
-  unsigned int zero_pulse = one_break;
-  unsigned int zero_break = one_pulse;
-
-  int arrayposition = 0;
-  for (int counter = length - 1; counter >= 0; --counter) {
-    if (code & (1 << counter)) {
-      raw[arrayposition] = one_pulse;
-      raw[arrayposition + 1] = one_break;
-    }
-    else {
-      raw[arrayposition] = zero_pulse;
-      raw[arrayposition + 1] = zero_break;
-    }
-    arrayposition = arrayposition + 2;
-  }
-  for (int i = 0; i < pulse; i++) {
-    irsend.sendRaw(raw, 15, 38);
-    delay(pdelay);
-  }
-}
-
-
 void loop() {
   server.handleClient();
   decode_results  results;        // Somewhere to store the results
@@ -859,9 +791,9 @@ void loop() {
     irrecv.resume();              // Prepare for the next value
   }
 
-  VerificaConexoesWiFIEMQTT();
-  EnviaEstadoOutputMQTT();
-  MQTT.loop();
+  //CheckMQTT();
+  //OutputMQTT();
+  //MQTT.loop();
   
   delay(200);
 }
