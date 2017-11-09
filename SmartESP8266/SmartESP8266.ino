@@ -1,4 +1,11 @@
-#include "PubSubClient.h"
+/*
+
+@daniel.correa
+After much development I conclude that the best model is to use infrared with http and use a third program to manage the rest. 
+In my case, I use the homeassistant (https://home-assistant.io/) and returned to the IR-Blaster model (https://github.com/mdhiggins/ESP8266-HTTP-IR-Blaster)
+
+*/
+
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
 #include <IRrecv.h>
@@ -48,27 +55,10 @@ char last_code_idx = 0;
 #define PIN_IN3 D8
 #define PIN_RESET 10
 
-//MQTT
-#define TOPICO_SUBSCRIBE_D4  "MQTTD4Envia20170506"
-#define TOPICO_PUBLISH_D4  "MQTTD4Recebe20170506"
-
-#define TOPICO_PUBLISH_IN0  "MQTTD0Recebe20170506"
-#define TOPICO_PUBLISH_IN1  "MQTTD1Recebe20170506"
-#define TOPICO_PUBLISH_IN2  "MQTTD2Recebe20170506"
-#define TOPICO_PUBLISH_IN3  "MQTTD3Recebe20170506"
-
-#define ID_MQTT "HomeAut"
-
 const int configpin = PIN_RESET;
-
-const char* BROKER_MQTT = "192.168.1.101";
-int BROKER_PORT = 1883;
 
 //WIFI
 WiFiClient espClient;
-PubSubClient MQTT(espClient);
-char StateOutput = '0';
-
 ESP8266WebServer server(port);
 HTTPClient http;
 Ticker ticker;
@@ -81,125 +71,6 @@ IRsend irsend1(PIN_IROUT0);                 // Transmitting preset 1
 IRsend irsend2(PIN_IROUT1);                 // Transmitting preset 2
 
 //=============================================================================
-// MQTT
-//=============================================================================
-void initMQTT() 
-{
-  MQTT.setServer(BROKER_MQTT, BROKER_PORT);
-  MQTT.setCallback(mqtt_callback);
-}
-
-
-void mqtt_callback(char* topic, byte* payload, unsigned int length) 
-{
- String msg;
-
- for(int i = 0; i < length; i++)
- {
-  char c = (char)payload[i];
-  msg += c;
- }
-
- if(msg.equals("L"))
- {
-  digitalWrite(PIN_LED0,LOW);
-  StateOutput = '1';
- }
-
- if (msg.equals("D"))
- {
-  digitalWrite(PIN_LED0, HIGH);
-  StateOutput = '0';  
- }
- 
-}
-
-void reconnectMQTT() 
-{
-  while (!MQTT.connected())
-  {
-    Serial.print("* Tentando se conectar ao Broker MQTT: ");
-    Serial.println(BROKER_MQTT);
-    if(MQTT.connect(ID_MQTT))
-    {
-      Serial.println("Conectado com sucesso ao broker MQTT!");
-      MQTT.subscribe(TOPICO_SUBSCRIBE_D4);
-    }
-    else
-    {
-      Serial.println("Falha ao reconectar no broker.");
-      Serial.println("Havera nova tentatica de conexao em 2s");
-      delay(2000);
-    }
-  }
-}
-
-
-void CheckMQTT(void)
-{
-  if(!MQTT.connected())
-    reconnectMQTT();
-}
-
-void OutputMQTT(void)
-{
-
-  Serial.print("OUT D4=");
-  Serial.print(StateOutput);
-  Serial.println();
-
-  if (StateOutput == '0')
-    MQTT.publish(TOPICO_PUBLISH_D4, "D");
-  if (StateOutput == '1')
-    MQTT.publish(TOPICO_PUBLISH_D4, "L");
-
-  int res = 0;
-  res = digitalRead(PIN_IN0);
-  Serial.print("IN D0=");
-  Serial.print(res);
-  Serial.println();
-
-  if (res == 0)
-    MQTT.publish(TOPICO_PUBLISH_IN0, "D");
-  if (res == 1)
-    MQTT.publish(TOPICO_PUBLISH_IN0, "L");  
- 
-  res = digitalRead(PIN_IN1);
-  Serial.print("IN D1=");
-  Serial.print(res);
-  Serial.println();
-
-  SendGet(BROKER_MQTT, "sensor/?D1=" + String(res, DEC));
-
-  if (res == 0)
-    MQTT.publish(TOPICO_PUBLISH_IN1, "D");
-  if (res == 1)
-    MQTT.publish(TOPICO_PUBLISH_IN1, "L");   
-
-  res = digitalRead(PIN_IN2);
-  Serial.print("IN D2=");
-  Serial.print(res);
-  Serial.println();
-
-  if (res == 0)
-    MQTT.publish(TOPICO_PUBLISH_IN2, "D");
-  if (res == 1)
-    MQTT.publish(TOPICO_PUBLISH_IN2, "L");  
-
-  res = digitalRead(PIN_IN3);
-  Serial.print("IN D8=");
-  Serial.print(res);
-  Serial.println();
-
-  if (res == 0)
-    MQTT.publish(TOPICO_PUBLISH_IN3, "D");
-  if (res == 1)
-    MQTT.publish(TOPICO_PUBLISH_IN3, "L");  
- 
-  delay(1000);
-}
-
-//=============================================================================
 // Configuration Outputs
 //=============================================================================
 void initOutput(void)
@@ -207,10 +78,8 @@ void initOutput(void)
   pinMode(PIN_LED0, OUTPUT);
   digitalWrite(PIN_LED0, HIGH);
 
+  //power off led
   pinMode(PIN_IN0, INPUT);
-  pinMode(PIN_IN1, INPUT);
-  pinMode(PIN_IN2, INPUT);
-  pinMode(PIN_IN3, INPUT);
 }
 
 
@@ -490,7 +359,6 @@ void setup() {
   Serial.println("Ready to send and receive IR signals");
 
   initOutput();
-  initMQTT();
 }
 
 
@@ -791,10 +659,6 @@ void loop() {
     irrecv.resume();              // Prepare for the next value
   }
 
-  //CheckMQTT();
-  //OutputMQTT();
-  //MQTT.loop();
-  
   delay(200);
 }
 
